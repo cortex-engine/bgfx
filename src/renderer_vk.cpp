@@ -6246,10 +6246,18 @@ VK_DESTROY
 			&& 0 != (m_flags & BGFX_TEXTURE_RT_MASK)
 			&& 0 == (m_flags & BGFX_TEXTURE_RT_WRITE_ONLY)
 			&& (_mip + 1) < m_numMips
-			&& 0 != (_resolve & BGFX_RESOLVE_AUTO_GEN_MIPS);
+			&& 0 != (_resolve & BGFX_RESOLVE_AUTO_GEN_MIPS)
+			;
 
 		const VkImageLayout oldLayout = m_currentImageLayout;
 		const VkImageLayout oldSingleMsaaLayout = m_currentSingleMsaaImageLayout;
+
+		const uint32_t numLayers = false
+			|| m_type == VK_IMAGE_VIEW_TYPE_CUBE
+			|| m_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
+			? m_numSides
+			: _numLayers
+			;
 
 		if (needResolve)
 		{
@@ -6266,11 +6274,11 @@ VK_DESTROY
 			resolve.srcSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
 			resolve.srcSubresource.mipLevel       = _mip;
 			resolve.srcSubresource.baseArrayLayer = _layer;
-			resolve.srcSubresource.layerCount     = _numLayers;
+			resolve.srcSubresource.layerCount     = numLayers;
 			resolve.dstSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
 			resolve.dstSubresource.mipLevel       = _mip;
 			resolve.dstSubresource.baseArrayLayer = _layer;
-			resolve.dstSubresource.layerCount     = _numLayers;
+			resolve.dstSubresource.layerCount     = numLayers;
 			resolve.extent.width  = m_width;
 			resolve.extent.height = m_height;
 			resolve.extent.depth  = 1;
@@ -6301,16 +6309,16 @@ VK_DESTROY
 			VkImageBlit blit;
 			blit.srcOffsets[0] = { 0, 0, 0 };
 			blit.srcOffsets[1] = { mipWidth, mipHeight, 1 };
-			blit.srcSubresource.aspectMask = m_aspectMask;
-			blit.srcSubresource.mipLevel = 0;
+			blit.srcSubresource.aspectMask     = m_aspectMask;
+			blit.srcSubresource.mipLevel       = 0;
 			blit.srcSubresource.baseArrayLayer = _layer;
-			blit.srcSubresource.layerCount = _numLayers;
+			blit.srcSubresource.layerCount     = numLayers;
 			blit.dstOffsets[0] = { 0, 0, 0 };
 			blit.dstOffsets[1] = { mipWidth, mipHeight, 1 };
-			blit.dstSubresource.aspectMask = m_aspectMask;
-			blit.dstSubresource.mipLevel = 0;
+			blit.dstSubresource.aspectMask     = m_aspectMask;
+			blit.dstSubresource.mipLevel       = 0;
 			blit.dstSubresource.baseArrayLayer = _layer;
-			blit.dstSubresource.layerCount = _numLayers;
+			blit.dstSubresource.layerCount     = numLayers;
 
 			for (uint32_t i = _mip + 1; i < m_numMips; i++)
 			{
@@ -6333,7 +6341,7 @@ VK_DESTROY
 					, blit.srcSubresource.mipLevel
 					, 1
 					, _layer
-					, _numLayers
+					, numLayers
 					);
 
 				vkCmdBlitImage(
@@ -6357,7 +6365,7 @@ VK_DESTROY
 				, _mip
 				, m_numMips - _mip - 1
 				, _layer
-				, _numLayers
+				, numLayers
 				);
 		}
 

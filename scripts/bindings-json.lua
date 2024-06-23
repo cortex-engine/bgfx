@@ -280,7 +280,7 @@ function converter.types(typ)
 		end
 
 		yield("{")
-		yield('"native": "'.. typ.cname .. "::" .. 'BGFX_' .. typ.cname:gsub("bgfx_(.*)_t", typ.cname.upper) .. '_COUNT",')
+		yield('"native": "BGFX_' .. typ.cname:gsub("bgfx_(.*)_t", typ.cname.upper) .. '_COUNT",')
 		yield('"name" : "Count"')
 		yield("}")
 

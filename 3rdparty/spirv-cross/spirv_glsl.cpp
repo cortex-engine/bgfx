@@ -2764,6 +2764,8 @@ void CompilerGLSL::emit_interface_block(const SPIRVariable &var)
 				block_qualifier = "patch ";
 			else if (has_decoration(var.self, DecorationPerPrimitiveEXT))
 				block_qualifier = "perprimitiveEXT ";
+			else if (has_decoration(var.self, DecorationPerVertexKHR))
+				block_qualifier = "pervertexEXT ";
 			else
 				block_qualifier = "";
 
@@ -3691,11 +3693,11 @@ void CompilerGLSL::emit_resources()
 				auto &type = this->get<SPIRType>(undef.basetype);
 				// OpUndef can be void for some reason ...
 				if (type.basetype == SPIRType::Void)
-					return;
+					continue;
 
 				// This will break. It is bogus and should not be legal.
 				if (type_is_top_level_block(type))
-					return;
+					continue;
 
 				string initializer;
 				if (options.force_zero_initialized_variables && type_can_zero_initialize(type))
@@ -5213,7 +5215,8 @@ string CompilerGLSL::to_enclosed_unpacked_expression(uint32_t id, bool register_
 string CompilerGLSL::to_dereferenced_expression(uint32_t id, bool register_expression_read)
 {
 	auto &type = expression_type(id);
-	if (type.pointer && should_dereference(id))
+
+	if (is_pointer(type) && should_dereference(id))
 		return dereference_expression(type, to_enclosed_expression(id, register_expression_read));
 	else
 		return to_expression(id, register_expression_read);
@@ -5222,7 +5225,7 @@ string CompilerGLSL::to_dereferenced_expression(uint32_t id, bool register_expre
 string CompilerGLSL::to_pointer_expression(uint32_t id, bool register_expression_read)
 {
 	auto &type = expression_type(id);
-	if (type.pointer && expression_is_lvalue(id) && !should_dereference(id))
+	if (is_pointer(type) && expression_is_lvalue(id) && !should_dereference(id))
 		return address_of_expression(to_enclosed_expression(id, register_expression_read));
 	else
 		return to_unpacked_expression(id, register_expression_read);
@@ -5231,7 +5234,7 @@ string CompilerGLSL::to_pointer_expression(uint32_t id, bool register_expression
 string CompilerGLSL::to_enclosed_pointer_expression(uint32_t id, bool register_expression_read)
 {
 	auto &type = expression_type(id);
-	if (type.pointer && expression_is_lvalue(id) && !should_dereference(id))
+	if (is_pointer(type) && expression_is_lvalue(id) && !should_dereference(id))
 		return address_of_expression(to_enclosed_expression(id, register_expression_read));
 	else
 		return to_enclosed_unpacked_expression(id, register_expression_read);
@@ -10286,7 +10289,40 @@ string CompilerGLSL::access_chain_internal(uint32_t base, const uint32_t *indice
 			}
 			else
 			{
-				append_index(index, is_literal, true);
+				if (flags & ACCESS_CHAIN_PTR_CHAIN_POINTER_ARITH_BIT)
+				{
+					SPIRType tmp_type(OpTypeInt);
+					tmp_type.basetype = SPIRType::UInt64;
+					tmp_type.width = 64;
+					tmp_type.vecsize = 1;
+					tmp_type.columns = 1;
+
+					TypeID ptr_type_id = expression_type_id(base);
+					const SPIRType &ptr_type = get<SPIRType>(ptr_type_id);
+					const SPIRType &pointee_type = get_pointee_type(ptr_type);
+
+					// This only runs in native pointer backends.
+					// Can replace reinterpret_cast with a backend string if ever needed.
+					// We expect this to count as a de-reference.
+					// This leaks some MSL details, but feels slightly overkill to
+					// add yet another virtual interface just for this.
+					auto intptr_expr = join("reinterpret_cast<", type_to_glsl(tmp_type), ">(", expr, ")");
+					intptr_expr += join(" + ", to_enclosed_unpacked_expression(index), " * ",
+					                    get_decoration(ptr_type_id, DecorationArrayStride));
+
+					if (flags & ACCESS_CHAIN_PTR_CHAIN_CAST_TO_SCALAR_BIT)
+					{
+						is_packed = true;
+						expr = join("*reinterpret_cast<device packed_", type_to_glsl(pointee_type),
+						            " *>(", intptr_expr, ")");
+					}
+					else
+					{
+						expr = join("*reinterpret_cast<", type_to_glsl(ptr_type), ">(", intptr_expr, ")");
+					}
+				}
+				else
+					append_index(index, is_literal, true);
 			}
 
 			if (type->basetype == SPIRType::ControlPointArray)
@@ -10706,6 +10742,11 @@ string CompilerGLSL::to_flattened_struct_member(const string &basename, const SP
 	return ret;
 }
 
+uint32_t CompilerGLSL::get_physical_type_stride(const SPIRType &) const
+{
+	SPIRV_CROSS_THROW("Invalid to call get_physical_type_stride on a backend without native pointer support.");
+}
+
 string CompilerGLSL::access_chain(uint32_t base, const uint32_t *indices, uint32_t count, const SPIRType &target_type,
                                   AccessChainMeta *meta, bool ptr_chain)
 {
@@ -10755,7 +10796,27 @@ string CompilerGLSL::access_chain(uint32_t base, const uint32_t *indices, uint32
 	{
 		AccessChainFlags flags = ACCESS_CHAIN_SKIP_REGISTER_EXPRESSION_READ_BIT;
 		if (ptr_chain)
+		{
 			flags |= ACCESS_CHAIN_PTR_CHAIN_BIT;
+			// PtrAccessChain could get complicated.
+			TypeID type_id = expression_type_id(base);
+			if (backend.native_pointers && has_decoration(type_id, DecorationArrayStride))
+			{
+				// If there is a mismatch we have to go via 64-bit pointer arithmetic :'(
+				// Using packed hacks only gets us so far, and is not designed to deal with pointer to
+				// random values. It works for structs though.
+				auto &pointee_type = get_pointee_type(get<SPIRType>(type_id));
+				uint32_t physical_stride = get_physical_type_stride(pointee_type);
+				uint32_t requested_stride = get_decoration(type_id, DecorationArrayStride);
+				if (physical_stride != requested_stride)
+				{
+					flags |= ACCESS_CHAIN_PTR_CHAIN_POINTER_ARITH_BIT;
+					if (is_vector(pointee_type))
+						flags |= ACCESS_CHAIN_PTR_CHAIN_CAST_TO_SCALAR_BIT;
+				}
+			}
+		}
+
 		return access_chain_internal(base, indices, count, flags, meta);
 	}
 }
@@ -14422,6 +14483,50 @@ void CompilerGLSL::emit_instruction(const Instruction &instruction)
 		break;
 	}
 
+	case OpImageBlockMatchWindowSSDQCOM:
+	case OpImageBlockMatchWindowSADQCOM:
+	case OpImageBlockMatchGatherSSDQCOM:
+	case OpImageBlockMatchGatherSADQCOM:
+	{
+		require_extension_internal("GL_QCOM_image_processing2");
+		uint32_t result_type_id = ops[0];
+		uint32_t id = ops[1];
+		string expr;
+		switch (opcode)
+		{
+		case OpImageBlockMatchWindowSSDQCOM:
+			expr = "textureBlockMatchWindowSSDQCOM";
+			break;
+		case OpImageBlockMatchWindowSADQCOM:
+			expr = "textureBlockMatchWindowSADQCOM";
+			break;
+		case OpImageBlockMatchGatherSSDQCOM:
+			expr = "textureBlockMatchGatherSSDQCOM";
+			break;
+		case OpImageBlockMatchGatherSADQCOM:
+			expr = "textureBlockMatchGatherSADQCOM";
+			break;
+		default:
+			SPIRV_CROSS_THROW("Invalid opcode for QCOM_image_processing2.");
+		}
+		expr += "(";
+
+		bool forward = false;
+		expr += to_expression(ops[2]);
+		expr += ", " + to_expression(ops[3]);
+
+		expr += ", " + to_non_uniform_aware_expression(ops[4]);
+		expr += ", " + to_expression(ops[5]);
+		expr += ", " + to_expression(ops[6]);
+
+		expr += ")";
+		emit_op(result_type_id, id, expr, forward);
+
+		inherit_expression_dependencies(id, ops[3]);
+		inherit_expression_dependencies(id, ops[5]);
+		break;
+	}
+
 	// Compute
 	case OpControlBarrier:
 	case OpMemoryBarrier:
@@ -17549,7 +17654,7 @@ void CompilerGLSL::emit_block_chain(SPIRBlock &block)
 
 		if (!collapsed_switch)
 		{
-			if (block_like_switch || is_legacy_es())
+			if (block_like_switch || is_legacy())
 			{
 				// ESSL 1.0 is not guaranteed to support do/while.
 				if (is_legacy_es())
@@ -17579,7 +17684,7 @@ void CompilerGLSL::emit_block_chain(SPIRBlock &block)
 				// Default case.
 				if (!block_like_switch)
 				{
-					if (is_legacy_es())
+					if (is_legacy())
 						statement("else");
 					else
 						statement("default:");
@@ -17587,7 +17692,7 @@ void CompilerGLSL::emit_block_chain(SPIRBlock &block)
 			}
 			else
 			{
-				if (is_legacy_es())
+				if (is_legacy())
 				{
 					statement((i ? "else " : ""), "if (", to_legacy_case_label(block.condition, literals, label_suffix),
 					          ")");
@@ -17639,7 +17744,7 @@ void CompilerGLSL::emit_block_chain(SPIRBlock &block)
 
 			if (block.default_block == block.next_block)
 			{
-				if (is_legacy_es())
+				if (is_legacy())
 					statement("else");
 				else
 					statement("default:");
@@ -17653,7 +17758,7 @@ void CompilerGLSL::emit_block_chain(SPIRBlock &block)
 
 		if (!collapsed_switch)
 		{
-			if (block_like_switch && !is_legacy_es())
+			if ((block_like_switch || is_legacy()) && !is_legacy_es())
 				end_scope_decl("while(false)");
 			else
 				end_scope();

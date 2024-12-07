@@ -208,7 +208,7 @@ width="640" height="480" border="0" /></a>
 ## Ethereal Engine
 
 https://github.com/volcoma/EtherealEngine - EtherealEngine is a C++ game engine
-and WYSIWYG dditor.
+and WYSIWYG editor.
 
 ![EtherealEngine screenshot](https://user-images.githubusercontent.com/1499411/29488403-ff3c3df6-8512-11e7-869f-32a783530cc3.png)
 
@@ -246,7 +246,7 @@ width="640" height="480" border="0" /></a>
 
 http://www.smithandwinston.com/ - Smith and Winston is an exploration twin stick
 shooter for PC, PS4 & XBoxOne arriving in late 2018. Smith and Winston features
-a massively destructable voxel world, rapid twin stick combat, physics puzzles
+a massively destructible voxel world, rapid twin stick combat, physics puzzles
 and Metroid-style discovery.
 
 <a href="http://www.youtube.com/watch?feature=player_embedded&v=Mr_L7KuiByU" 
@@ -650,6 +650,17 @@ from the community.
 Source: https://github.com/cubzh/cubzh
 
 ![Cubzh screenshot](https://camo.githubusercontent.com/154159f42f526cc87357d24419133d99d8996ee2a16513ae5b5d31bd7e06bc5d/68747470733a2f2f6672616d657275736572636f6e74656e742e636f6d2f696d616765732f4957384c7147575239496e696b7542534a6c5a664578647631412e77656270)
+
+## World Of Goo 2
+
+https://store.epicgames.com/en-US/p/world-of-goo-2 - Build bridges, 
+grow towers, terraform terrain, and fuel flying machines in 
+the stunning followup to the multi-award winning World of Goo.
+
+<a href="http://www.youtube.com/watch?feature=player_embedded&v=q3XVl53Ajsk" 
+target="_blank"><img src="http://img.youtube.com/vi/q3XVl53Ajsk/0.jpg" 
+alt="World Of Goo 2"
+width="640" height="480" border="0" /></a>
 
 [License (BSD 2-clause)](https://bkaradzic.github.io/bgfx/license.html)
 -----------------------------------------------------------------------

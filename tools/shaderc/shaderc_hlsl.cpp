@@ -520,7 +520,7 @@ namespace bgfx { namespace hlsl
 			hr = reflect->GetResourceBindingDesc(ii, &bindDesc);
 			if (SUCCEEDED(hr) )
 			{
-				if (D3D_SIT_SAMPLER == bindDesc.Type || D3D_SIT_TEXTURE == bindDesc.Type)
+				if (/*D3D_SIT_SAMPLER == bindDesc.Type ||*/ D3D_SIT_TEXTURE == bindDesc.Type)
 				{
 					BX_TRACE("\t%s, %d, %d, %d"
 						, bindDesc.Name

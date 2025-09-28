@@ -1,5 +1,5 @@
 --
--- Copyright 2010-2024 Branimir Karadzic. All rights reserved.
+-- Copyright 2010-2025 Branimir Karadzic. All rights reserved.
 -- License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
 --
 
@@ -43,8 +43,6 @@ project "spirv-opt"
 		path.join(SPIRV_TOOLS, "source/disassemble.cpp"),
 		path.join(SPIRV_TOOLS, "source/disassemble.h"),
 		path.join(SPIRV_TOOLS, "source/enum_set.h"),
-		path.join(SPIRV_TOOLS, "source/enum_string_mapping.cpp"),
-		path.join(SPIRV_TOOLS, "source/enum_string_mapping.h"),
 		path.join(SPIRV_TOOLS, "source/ext_inst.cpp"),
 		path.join(SPIRV_TOOLS, "source/ext_inst.h"),
 		path.join(SPIRV_TOOLS, "source/extensions.cpp"),
@@ -78,6 +76,8 @@ project "spirv-opt"
 		path.join(SPIRV_TOOLS, "source/spirv_validator_options.h"),
 		path.join(SPIRV_TOOLS, "source/table.cpp"),
 		path.join(SPIRV_TOOLS, "source/table.h"),
+		path.join(SPIRV_TOOLS, "source/table2.cpp"),
+		path.join(SPIRV_TOOLS, "source/table2.h"),
 		path.join(SPIRV_TOOLS, "source/text.cpp"),
 		path.join(SPIRV_TOOLS, "source/text.h"),
 		path.join(SPIRV_TOOLS, "source/text_handler.cpp"),

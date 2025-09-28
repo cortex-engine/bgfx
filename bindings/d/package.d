@@ -904,57 +904,57 @@ pragma(inline,true) nothrow @nogc pure @safe{
 	StateBlend_ blendFuncSeparate(StateBlend_ srcRGB, StateBlend_ dstRGB, StateBlend_ srcA, StateBlend_ dstA){
 		return (srcRGB | ((dstRGB) << 4)) | ((srcA | (dstA << 4)) << 8);
 	}
-	
+
 	///Blend equation separate.
 	StateBlendEquation_ blendEquationSeparate(StateBlendEquation_ equationRGB, StateBlendEquation_ equationA){
 		return equationRGB | (equationA << 3);
 	}
-	
+
 	///Blend function.
 	StateBlend_ blendFunc(StateBlend_ src, StateBlend_ dst){ return blendFuncSeparate(src, dst, src, dst); }
-	
+
 	///Blend equation.
 	StateBlendEquation_ blendEquation(StateBlendEquation_ equation){ return blendEquationSeparate(equation, equation); }
-	
+
 	///Utility predefined blend modes.
 	enum StateBlendFunc: StateBlend_{
 		///Additive blending.
 		add = blendFunc(StateBlend.one, StateBlend.one),
-		
+
 		///Alpha blend.
 		alpha = blendFunc(StateBlend.srcAlpha, StateBlend.invSrcAlpha),
-		
+
 		///Selects darker color of blend.
 		darken = blendFunc(StateBlend.one, StateBlend.one) | blendEquation(StateBlendEquation.min),
-		
+
 		///Selects lighter color of blend.
 		lighten = blendFunc(StateBlend.one, StateBlend.one) | blendEquation(StateBlendEquation.max),
-		
+
 		///Multiplies colors.
 		multiply = blendFunc(StateBlend.dstColor, StateBlend.zero),
-		
+
 		///Opaque pixels will cover the pixels directly below them without any math or algorithm applied to them.
 		normal = blendFunc(StateBlend.one, StateBlend.invSrcAlpha),
-		
+
 		///Multiplies the inverse of the blend and base colors.
 		screen = blendFunc(StateBlend.one, StateBlend.invSrcColor),
-		
+
 		///Decreases the brightness of the base color based on the value of the blend color.
 		linearBurn = blendFunc(StateBlend.dstColor, StateBlend.invDstColor) | blendEquation(StateBlendEquation.sub),
 	}
-	
+
 	StateBlend_ blendFuncRTx(StateBlend_ src, StateBlend_ dst){
 		return cast(uint)(src >> StateBlend.shift) | (cast(uint)(dst >> StateBlend.shift) << 4);
 	}
-	
+
 	StateBlend_ blendFuncRTxE(StateBlend_ src, StateBlend_ dst, StateBlendEquation_ equation){
 		return blendFuncRTx(src, dst) | (cast(uint)(equation >> StateBlendEquation.shift) << 8);
 	}
-	
+
 	StateBlend_ blendFuncRT1(StateBlend_ src, StateBlend_ dst){ return blendFuncRTx(src, dst) <<  0; }
 	StateBlend_ blendFuncRT2(StateBlend_ src, StateBlend_ dst){ return blendFuncRTx(src, dst) << 11; }
 	StateBlend_ blendFuncRT3(StateBlend_ src, StateBlend_ dst){ return blendFuncRTx(src, dst) << 22; }
-	
+
 	StateBlend_ blendFuncRT1E(StateBlend_ src, StateBlend_ dst, StateBlendEquation_ equation){
 		return blendFuncRTxE(src, dst, equation) <<  0;
 	}
@@ -2807,6 +2807,7 @@ mixin(joinFnBinds((){
 		*      - `u_model mat4[BGFX_CONFIG_MAX_BONES]` - array of model matrices.
 		*      - `u_modelView mat4` - concatenated model view matrix, only first
 		*        model matrix from array is used.
+		*      - `u_invModelView mat4` - inverted concatenated model view matrix.
 		*      - `u_modelViewProj mat4` - concatenated model view projection matrix.
 		*      - `u_alphaRef float` - alpha reference value for alpha test.
 		Params:

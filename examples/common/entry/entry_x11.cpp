@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2024 Branimir Karadzic. All rights reserved.
+ * Copyright 2011-2025 Branimir Karadzic. All rights reserved.
  * License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
  */
 
@@ -81,7 +81,7 @@ namespace entry
 		{ Key::GamepadUp,   Key::GamepadDown  },
 		{ Key::None,        Key::None         },
 	};
-	BX_STATIC_ASSERT(BX_COUNTOF(s_translateAxis) == BX_COUNTOF(s_axisDpad) );
+	static_assert(BX_COUNTOF(s_translateAxis) == BX_COUNTOF(s_axisDpad) );
 
 	struct Joystick
 	{
@@ -422,6 +422,8 @@ namespace entry
 				bool joystick = s_joystick.update(m_eventQueue);
 				bool xpending = XPending(m_display);
 
+				uint8_t oldModifers = m_modifiers;
+
 				if (!xpending)
 				{
 					bx::sleep(joystick ? 8 : 16);
@@ -500,6 +502,7 @@ namespace entry
 							{
 								XKeyEvent& xkey = event.xkey;
 								KeySym keysym = XLookupKeysym(&xkey, 0);
+
 								switch (keysym)
 								{
 								case XK_Meta_L:    setModifier(Modifier::LeftMeta,   KeyPress == event.type); break;
@@ -538,6 +541,7 @@ namespace entry
 										if (Key::None != key)
 										{
 											m_eventQueue.postKeyEvent(handle, key, m_modifiers, KeyPress == event.type);
+											oldModifers = m_modifiers;
 										}
 									}
 									break;
@@ -555,6 +559,11 @@ namespace entry
 								}
 							}
 							break;
+					}
+
+					if (oldModifers != m_modifiers)
+					{
+						m_eventQueue.postKeyEvent({ UINT16_MAX }, Key::None, m_modifiers, true);
 					}
 				}
 			}

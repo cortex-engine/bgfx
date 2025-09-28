@@ -68,8 +68,8 @@ struct OcornutImguiContext
 	void render(ImDrawData* _drawData)
 	{
 		// Avoid rendering when minimized, scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
-		int32_t dispWidth  = _drawData->DisplaySize.x * _drawData->FramebufferScale.x;
-		int32_t dispHeight = _drawData->DisplaySize.y * _drawData->FramebufferScale.y;
+		int32_t dispWidth  = int32_t(_drawData->DisplaySize.x * _drawData->FramebufferScale.x);
+		int32_t dispHeight = int32_t(_drawData->DisplaySize.y * _drawData->FramebufferScale.y);
 		if (dispWidth  <= 0
 		||  dispHeight <= 0)
 		{
@@ -222,6 +222,7 @@ struct OcornutImguiContext
 		setupStyle(true);
 
 		io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+		io.ConfigDebugHighlightIdConflicts = !!BX_CONFIG_DEBUG;
 
 #if USE_ENTRY
 		for (int32_t ii = 0; ii < (int32_t)entry::Key::Count; ++ii)
@@ -471,12 +472,13 @@ struct OcornutImguiContext
 		m_lastScroll = _scroll;
 
 #if USE_ENTRY
-		uint8_t modifiers = inputGetModifiersState();
+		const uint8_t modifiers = inputGetModifiersState();
 		io.AddKeyEvent(ImGuiMod_Shift, 0 != (modifiers & (entry::Modifier::LeftShift | entry::Modifier::RightShift) ) );
 		io.AddKeyEvent(ImGuiMod_Ctrl,  0 != (modifiers & (entry::Modifier::LeftCtrl  | entry::Modifier::RightCtrl ) ) );
 		io.AddKeyEvent(ImGuiMod_Alt,   0 != (modifiers & (entry::Modifier::LeftAlt   | entry::Modifier::RightAlt  ) ) );
 		io.AddKeyEvent(ImGuiMod_Super, 0 != (modifiers & (entry::Modifier::LeftMeta  | entry::Modifier::RightMeta ) ) );
-		for (int32_t ii = 0; ii < (int32_t)entry::Key::Count; ++ii)
+
+		for (int32_t ii = 0; ii < int32_t(entry::Key::Count); ++ii)
 		{
 			io.AddKeyEvent(m_keyMap[ii], inputGetKeyState(entry::Key::Enum(ii) ) );
 			io.SetKeyEventNativeData(m_keyMap[ii], 0, 0, ii);
@@ -569,6 +571,7 @@ namespace ImGui
 } // namespace ImGui
 
 #if USE_LOCAL_STB
+BX_PRAGMA_DIAGNOSTIC_IGNORED_MSVC(4244); // error C4244: 'argument': conversion from 'double' to 'float', possible loss of data
 BX_PRAGMA_DIAGNOSTIC_IGNORED_MSVC(4505); // error C4505: '' : unreferenced local function has been removed
 BX_PRAGMA_DIAGNOSTIC_IGNORED_CLANG_GCC("-Wunused-function"); // warning: 'int rect_width_compare(const void*, const void*)' defined but not used
 BX_PRAGMA_DIAGNOSTIC_IGNORED_CLANG("-Wunknown-pragmas")

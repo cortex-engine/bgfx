@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2024 Branimir Karadzic. All rights reserved.
+ * Copyright 2011-2025 Branimir Karadzic. All rights reserved.
  * License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
  */
 
@@ -92,13 +92,13 @@ namespace bgfx
 		}                                             \
 	BX_MACRO_BLOCK_END
 
-#define _BGFX_ASSERT(_condition, _format, ...)                                                                 \
-	BX_MACRO_BLOCK_BEGIN                                                                                       \
-		if (!BX_IGNORE_C4127(_condition)                                                                       \
-		&&  bx::assertFunction(bx::Location::current(), "ASSERT " #_condition " -> " _format, ##__VA_ARGS__) ) \
-		{                                                                                                      \
-			bgfx::fatal(__FILE__, uint16_t(__LINE__), bgfx::Fatal::DebugCheck, _format, ##__VA_ARGS__);        \
-		}                                                                                                      \
+#define _BGFX_ASSERT(_condition, _format, ...)                                                                    \
+	BX_MACRO_BLOCK_BEGIN                                                                                          \
+		if (!BX_IGNORE_C4127(_condition)                                                                          \
+		&&  bx::assertFunction(bx::Location::current(), 0, "ASSERT " #_condition " -> " _format, ##__VA_ARGS__) ) \
+		{                                                                                                         \
+			bgfx::fatal(__FILE__, uint16_t(__LINE__), bgfx::Fatal::DebugCheck, _format, ##__VA_ARGS__);           \
+		}                                                                                                         \
 	BX_MACRO_BLOCK_END
 
 #define BGFX_FATAL(_condition, _err, _format, ...)                             \
@@ -567,8 +567,6 @@ namespace bgfx
 	extern bx::AllocatorI* g_allocator;
 	extern Caps g_caps;
 
-	typedef bx::StringT<&g_allocator> String;
-
 	struct ProfilerScope
 	{
 		ProfilerScope(const char* _name, uint32_t _abgr, const char* _filePath, uint16_t _line)
@@ -787,8 +785,8 @@ namespace bgfx
 		{
 			if (0 < m_num)
 			{
-				uint32_t* tempKeys = (uint32_t*)alloca(sizeof(m_keys) );
-				uint32_t* tempValues = (uint32_t*)alloca(sizeof(m_values) );
+				uint32_t* tempKeys = (uint32_t*)BX_STACK_ALLOC(sizeof(m_keys) );
+				uint32_t* tempValues = (uint32_t*)BX_STACK_ALLOC(sizeof(m_values) );
 				bx::radixSort(m_keys, tempKeys, m_values, tempValues, m_num);
 				return true;
 			}
@@ -843,6 +841,7 @@ namespace bgfx
 			InvViewProj,
 			Model,
 			ModelView,
+			InvModelView,
 			ModelViewProj,
 			AlphaRef,
 			Count
@@ -1089,9 +1088,9 @@ namespace bgfx
 	constexpr uint8_t  kSortKeyComputeProgramShift = kSortKeyComputeSeqShift - BGFX_CONFIG_SORT_KEY_NUM_BITS_PROGRAM;
 	constexpr uint64_t kSortKeyComputeProgramMask  = uint64_t(BGFX_CONFIG_MAX_PROGRAMS-1)<<kSortKeyComputeProgramShift;
 
-	BX_STATIC_ASSERT(BGFX_CONFIG_MAX_VIEWS <= (1<<kSortKeyViewNumBits) );
-	BX_STATIC_ASSERT( (BGFX_CONFIG_MAX_PROGRAMS & (BGFX_CONFIG_MAX_PROGRAMS-1) ) == 0); // Must be power of 2.
-	BX_STATIC_ASSERT( (0 // Render key mask shouldn't overlap.
+	static_assert(BGFX_CONFIG_MAX_VIEWS <= (1<<kSortKeyViewNumBits) );
+	static_assert( (BGFX_CONFIG_MAX_PROGRAMS & (BGFX_CONFIG_MAX_PROGRAMS-1) ) == 0); // Must be power of 2.
+	static_assert( (0 // Render key mask shouldn't overlap.
 		| kSortKeyViewMask
 		| kSortKeyDrawBit
 		| kSortKeyDrawTypeMask
@@ -1106,7 +1105,7 @@ namespace bgfx
 		^ kSortKeyDraw0ProgramMask
 		^ kSortKeyDraw0DepthMask
 		) );
-	BX_STATIC_ASSERT( (0 // Render key mask shouldn't overlap.
+	static_assert( (0 // Render key mask shouldn't overlap.
 		| kSortKeyViewMask
 		| kSortKeyDrawBit
 		| kSortKeyDrawTypeMask
@@ -1121,7 +1120,7 @@ namespace bgfx
 		^ kSortKeyDraw1BlendMask
 		^ kSortKeyDraw1ProgramMask
 		) );
-	BX_STATIC_ASSERT( (0 // Render key mask shouldn't overlap.
+	static_assert( (0 // Render key mask shouldn't overlap.
 		| kSortKeyViewMask
 		| kSortKeyDrawBit
 		| kSortKeyDrawTypeMask
@@ -1136,7 +1135,7 @@ namespace bgfx
 		^ kSortKeyDraw2BlendMask
 		^ kSortKeyDraw2ProgramMask
 		) );
-	BX_STATIC_ASSERT( (0 // Compute key mask shouldn't overlap.
+	static_assert( (0 // Compute key mask shouldn't overlap.
 		| kSortKeyViewMask
 		| kSortKeyDrawBit
 		| kSortKeyComputeSeqShift
@@ -1508,7 +1507,7 @@ namespace bgfx
 			}
 		}
 
-		static uint32_t encodeOpcode(UniformType::Enum _type, uint16_t _loc, uint16_t _num, uint16_t _copy)
+		static uint32_t encodeOpcode(uint8_t _type, uint16_t _loc, uint16_t _num, uint16_t _copy)
 		{
 			const uint32_t type = _type << kConstantOpcodeTypeShift;
 			const uint32_t loc  = _loc  << kConstantOpcodeLocShift;
@@ -1517,14 +1516,14 @@ namespace bgfx
 			return type|loc|num|copy;
 		}
 
-		static void decodeOpcode(uint32_t _opcode, UniformType::Enum& _type, uint16_t& _loc, uint16_t& _num, uint16_t& _copy)
+		static void decodeOpcode(uint32_t _opcode, uint8_t& _type, uint16_t& _loc, uint16_t& _num, uint16_t& _copy)
 		{
 			const uint32_t type = (_opcode&kConstantOpcodeTypeMask) >> kConstantOpcodeTypeShift;
 			const uint32_t loc  = (_opcode&kConstantOpcodeLocMask ) >> kConstantOpcodeLocShift;
 			const uint32_t num  = (_opcode&kConstantOpcodeNumMask ) >> kConstantOpcodeNumShift;
 			const uint32_t copy = (_opcode&kConstantOpcodeCopyMask); // >> kConstantOpcodeCopyShift;
 
-			_type = (UniformType::Enum)(type);
+			_type = (uint8_t )type;
 			_copy = (uint16_t)copy;
 			_num  = (uint16_t)num;
 			_loc  = (uint16_t)loc;
@@ -1583,7 +1582,7 @@ namespace bgfx
 		}
 
 		void writeUniform(UniformType::Enum _type, uint16_t _loc, const void* _value, uint16_t _num = 1);
-		void writeUniformHandle(UniformType::Enum _type, uint16_t _loc, UniformHandle _handle, uint16_t _num = 1);
+		void writeUniformHandle(uint8_t _type, uint16_t _loc, UniformHandle _handle, uint16_t _num = 1);
 		void writeMarker(const bx::StringView& _name);
 
 	private:
@@ -1876,14 +1875,14 @@ namespace bgfx
 
 	struct IndexBuffer
 	{
-		String   m_name;
+		bx::FixedString64 m_name;
 		uint32_t m_size;
 		uint16_t m_flags;
 	};
 
 	struct VertexBuffer
 	{
-		String   m_name;
+		bx::FixedString64 m_name;
 		uint32_t m_size;
 		uint16_t m_stride;
 	};
@@ -1933,7 +1932,7 @@ namespace bgfx
 	struct ShaderRef
 	{
 		UniformHandle* m_uniforms;
-		String   m_name;
+		bx::FixedString64 m_name;
 		uint32_t m_hashIn;
 		uint32_t m_hashOut;
 		uint16_t m_num;
@@ -1949,7 +1948,7 @@ namespace bgfx
 
 	struct UniformRef
 	{
-		String            m_name;
+		bx::FixedString64 m_name;
 		UniformType::Enum m_type;
 		uint16_t          m_num;
 		int16_t           m_refCount;
@@ -2014,7 +2013,7 @@ namespace bgfx
 			return 0 < m_depth;
 		}
 
-		String   m_name;
+		bx::FixedString64 m_name;
 		void*    m_ptr;
 		uint64_t m_flags;
 		uint32_t m_storageSize;
@@ -2034,7 +2033,7 @@ namespace bgfx
 
 	struct FrameBufferRef
 	{
-		String m_name;
+		bx::FixedString64 m_name;
 		uint16_t m_width;
 		uint16_t m_height;
 
@@ -3138,7 +3137,7 @@ namespace bgfx
 			, m_numFreeDynamicIndexBufferHandles(0)
 			, m_numFreeDynamicVertexBufferHandles(0)
 			, m_numFreeOcclusionQueryHandles(0)
-			, m_colorPaletteDirty(0)
+			, m_colorPaletteDirty(2)
 			, m_frames(0)
 			, m_debug(BGFX_DEBUG_NONE)
 			, m_rtMemoryUsed(0)
@@ -4193,7 +4192,7 @@ namespace bgfx
 			sr.m_num      = 0;
 			sr.m_uniforms = NULL;
 
-			UniformHandle* uniforms = (UniformHandle*)alloca(count*sizeof(UniformHandle) );
+			UniformHandle* uniforms = (UniformHandle*)BX_STACK_ALLOC(count*sizeof(UniformHandle) );
 
 			for (uint32_t ii = 0; ii < count; ++ii)
 			{
@@ -4975,7 +4974,7 @@ namespace bgfx
 			BGFX_CHECK_HANDLE("getUniformInfo", m_uniformHandle, _handle);
 
 			UniformRef& uniform = m_uniformRef[_handle.idx];
-			bx::strCopy(_info.name, sizeof(_info.name), uniform.m_name.getPtr() );
+			bx::strCopy(_info.name, sizeof(_info.name), uniform.m_name);
 			_info.type = uniform.m_type;
 			_info.num  = uniform.m_num;
 		}

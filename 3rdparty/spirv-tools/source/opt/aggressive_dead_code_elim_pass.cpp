@@ -43,6 +43,10 @@ constexpr uint32_t kGlobalVariableVariableIndex = 12;
 constexpr uint32_t kExtInstSetInIdx = 0;
 constexpr uint32_t kExtInstOpInIdx = 1;
 constexpr uint32_t kInterpolantInIdx = 2;
+constexpr uint32_t kCooperativeMatrixLoadSourceAddrInIdx = 0;
+constexpr uint32_t kDebugValueLocalVariable = 2;
+constexpr uint32_t kDebugValueValue = 3;
+constexpr uint32_t kDebugValueExpression = 4;
 
 // Sorting functor to present annotation instructions in an easy-to-process
 // order. The functor orders by opcode first and falls back on unique id
@@ -276,7 +280,51 @@ bool AggressiveDCEPass::AggressiveDCE(Function* func) {
   live_local_vars_.clear();
   InitializeWorkList(func, structured_order);
   ProcessWorkList(func);
+  ProcessDebugInformation(structured_order);
+  ProcessWorkList(func);
   return KillDeadInstructions(func, structured_order);
+}
+
+void AggressiveDCEPass::ProcessDebugInformation(
+    std::list<BasicBlock*>& structured_order) {
+  for (auto bi = structured_order.begin(); bi != structured_order.end(); bi++) {
+    (*bi)->ForEachInst([this](Instruction* inst) {
+      // DebugDeclare is not dead. It must be converted to DebugValue in a
+      // later pass
+      if (inst->IsNonSemanticInstruction() &&
+          inst->GetShader100DebugOpcode() ==
+              NonSemanticShaderDebugInfo100DebugDeclare) {
+        AddToWorklist(inst);
+        return;
+      }
+
+      // If the Value of a DebugValue is killed, set Value operand to Undef
+      if (inst->IsNonSemanticInstruction() &&
+          inst->GetShader100DebugOpcode() ==
+              NonSemanticShaderDebugInfo100DebugValue) {
+        uint32_t id = inst->GetSingleWordInOperand(kDebugValueValue);
+        auto def = get_def_use_mgr()->GetDef(id);
+        if (!live_insts_.Set(def->unique_id())) {
+          AddToWorklist(inst);
+          context()->get_def_use_mgr()->UpdateDefUse(inst);
+          worklist_.push(def);
+          def->SetOpcode(spv::Op::OpUndef);
+          def->SetInOperands({});
+          id = inst->GetSingleWordInOperand(kDebugValueLocalVariable);
+          auto localVar = get_def_use_mgr()->GetDef(id);
+          AddToWorklist(localVar);
+          context()->get_def_use_mgr()->UpdateDefUse(localVar);
+          AddOperandsToWorkList(localVar);
+          context()->get_def_use_mgr()->UpdateDefUse(def);
+          id = inst->GetSingleWordInOperand(kDebugValueExpression);
+          auto expression = get_def_use_mgr()->GetDef(id);
+          AddToWorklist(expression);
+          context()->get_def_use_mgr()->UpdateDefUse(expression);
+          return;
+        }
+      }
+    });
+  }
 }
 
 bool AggressiveDCEPass::KillDeadInstructions(
@@ -438,6 +486,11 @@ uint32_t AggressiveDCEPass::GetLoadedVariableFromNonFunctionCalls(
       }
       break;
     }
+    case spv::Op::OpCooperativeMatrixLoadNV:
+    case spv::Op::OpCooperativeMatrixLoadKHR:
+    case spv::Op::OpCooperativeMatrixLoadTensorNV:
+      return GetVariableId(
+          inst->GetSingleWordInOperand(kCooperativeMatrixLoadSourceAddrInIdx));
     default:
       break;
   }
@@ -670,6 +723,7 @@ void AggressiveDCEPass::InitializeModuleScopeLiveInstructions() {
     auto op = dbg.GetShader100DebugOpcode();
     if (op == NonSemanticShaderDebugInfo100DebugCompilationUnit ||
         op == NonSemanticShaderDebugInfo100DebugEntryPoint ||
+        op == NonSemanticShaderDebugInfo100DebugSource ||
         op == NonSemanticShaderDebugInfo100DebugSourceContinued) {
       AddToWorklist(&dbg);
     }
@@ -907,6 +961,19 @@ bool AggressiveDCEPass::ProcessGlobalValues() {
       context()->AnalyzeUses(&dbg);
       continue;
     }
+    // Save debug build identifier even if no other instructions refer to it.
+    if (dbg.GetShader100DebugOpcode() ==
+        NonSemanticShaderDebugInfo100DebugBuildIdentifier) {
+      // The debug build identifier refers to other instructions that
+      // can potentially be removed, they also need to be kept alive.
+      dbg.ForEachInId([this](const uint32_t* id) {
+        Instruction* ref_inst = get_def_use_mgr()->GetDef(*id);
+        if (ref_inst) {
+          live_insts_.Set(ref_inst->unique_id());
+        }
+      });
+      continue;
+    }
     to_kill_.push_back(&dbg);
     modified = true;
   }
@@ -964,7 +1031,6 @@ Pass::Status AggressiveDCEPass::Process() {
 void AggressiveDCEPass::InitExtensions() {
   extensions_allowlist_.clear();
 
-  // clang-format off
   extensions_allowlist_.insert({
       "SPV_AMD_shader_explicit_vertex_parameter",
       "SPV_AMD_shader_trinary_minmax",
@@ -1029,9 +1095,13 @@ void AggressiveDCEPass::InitExtensions() {
       "SPV_KHR_compute_shader_derivatives",
       "SPV_NV_cooperative_matrix",
       "SPV_KHR_cooperative_matrix",
-      "SPV_KHR_ray_tracing_position_fetch"
+      "SPV_KHR_ray_tracing_position_fetch",
+      "SPV_KHR_fragment_shading_rate",
+      "SPV_KHR_quad_control",
+      "SPV_NV_shader_invocation_reorder",
+      "SPV_NV_cluster_acceleration_structure",
+      "SPV_NV_linear_swept_spheres",
   });
-  // clang-format on
 }
 
 Instruction* AggressiveDCEPass::GetHeaderBranch(BasicBlock* blk) {

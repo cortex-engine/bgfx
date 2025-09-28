@@ -15,7 +15,7 @@
 #ifndef SOURCE_DISASSEMBLE_H_
 #define SOURCE_DISASSEMBLE_H_
 
-#include <iosfwd>
+#include <ios>
 #include <sstream>
 #include <string>
 
@@ -37,7 +37,6 @@ std::string spvInstructionBinaryToText(const spv_target_env env,
                                        const size_t word_count,
                                        const uint32_t options);
 
-class AssemblyGrammar;
 namespace disassemble {
 
 // Shared code with other tools (than the disassembler) that might need to
@@ -45,8 +44,8 @@ namespace disassemble {
 // binary for an instruction to its assembly representation.
 class InstructionDisassembler {
  public:
-  InstructionDisassembler(const AssemblyGrammar& grammar, std::ostream& stream,
-                          uint32_t options, NameMapper name_mapper);
+  InstructionDisassembler(std::ostream& stream, uint32_t options,
+                          NameMapper name_mapper);
 
   // Emits the assembly header for the module.
   void EmitHeaderSpirv();
@@ -94,17 +93,16 @@ class InstructionDisassembler {
   // Emits an operand for the given instruction, where the instruction
   // is at offset words from the start of the binary.
   void EmitOperand(std::ostream& stream, const spv_parsed_instruction_t& inst,
-                   const uint16_t operand_index) const;
+                   uint16_t operand_index) const;
 
   // Emits a mask expression for the given mask word of the specified type.
-  void EmitMaskOperand(std::ostream& stream, const spv_operand_type_t type,
-                       const uint32_t word) const;
+  void EmitMaskOperand(std::ostream& stream, spv_operand_type_t type,
+                       uint32_t word) const;
 
   // Generate part of the instruction as a comment to be added to
   // |id_comments_|.
   void GenerateCommentForDecoratedId(const spv_parsed_instruction_t& inst);
 
-  const spvtools::AssemblyGrammar& grammar_;
   std::ostream& stream_;
   const bool print_;  // Should we also print to the standard output stream?
   const bool color_;  // Should we print in colour?

@@ -1,5 +1,5 @@
 /*
- * Copyright 2011-2024 Branimir Karadzic. All rights reserved.
+ * Copyright 2011-2025 Branimir Karadzic. All rights reserved.
  * License: https://github.com/bkaradzic/bgfx/blob/master/LICENSE
  */
 
@@ -14,15 +14,17 @@ BX_PRAGMA_DIAGNOSTIC_IGNORED_CLANG_GCC("-Wattributes") // warning: attribute ign
 BX_PRAGMA_DIAGNOSTIC_IGNORED_CLANG_GCC("-Wdeprecated-declarations") // warning: ‘MSLVertexAttr’ is deprecated
 BX_PRAGMA_DIAGNOSTIC_IGNORED_CLANG_GCC("-Wtype-limits") // warning: comparison of unsigned expression in ‘< 0’ is always false
 BX_PRAGMA_DIAGNOSTIC_IGNORED_CLANG_GCC("-Wshadow") // warning: declaration of 'userData' shadows a member of 'glslang::TShader::Includer::IncludeResult'
+#define SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
+#include <spirv_common.hpp>
+#include <spirv_msl.hpp>
+#include <spirv_reflect.hpp>
+
 #define ENABLE_OPT 1
 #include <ShaderLang.h>
 #include <ResourceLimits.h>
 #include <SPIRV/SPVRemapper.h>
 #include <SPIRV/GlslangToSpv.h>
 #include <SPIRV/SpvTools.h>
-#define SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS
-#include <spirv_msl.hpp>
-#include <spirv_reflect.hpp>
 #include <spirv-tools/optimizer.hpp>
 BX_PRAGMA_DIAGNOSTIC_POP()
 
@@ -302,7 +304,7 @@ namespace bgfx { namespace spirv
 		"a_texcoord6",
 		"a_texcoord7",
 	};
-	BX_STATIC_ASSERT(bgfx::Attrib::Count == BX_COUNTOF(s_attribName) );
+	static_assert(bgfx::Attrib::Count == BX_COUNTOF(s_attribName) );
 
 	bgfx::Attrib::Enum toAttribEnum(const bx::StringView& _name)
 	{

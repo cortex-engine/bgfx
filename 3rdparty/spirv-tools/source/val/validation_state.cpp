@@ -1,4 +1,6 @@
 // Copyright (c) 2015-2016 The Khronos Group Inc.
+// Modifications Copyright (C) 2024 Advanced Micro Devices, Inc. All rights
+// reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,6 +23,7 @@
 #include "source/opcode.h"
 #include "source/spirv_constant.h"
 #include "source/spirv_target_env.h"
+#include "source/table2.h"
 #include "source/util/make_unique.h"
 #include "source/val/basic_block.h"
 #include "source/val/construct.h"
@@ -39,14 +42,17 @@ ModuleLayoutSection InstructionLayoutSection(
 
   switch (op) {
     case spv::Op::OpCapability:
+    case spv::Op::OpConditionalCapabilityINTEL:
       return kLayoutCapabilities;
     case spv::Op::OpExtension:
+    case spv::Op::OpConditionalExtensionINTEL:
       return kLayoutExtensions;
     case spv::Op::OpExtInstImport:
       return kLayoutExtInstImport;
     case spv::Op::OpMemoryModel:
       return kLayoutMemoryModel;
     case spv::Op::OpEntryPoint:
+    case spv::Op::OpConditionalEntryPointINTEL:
       return kLayoutEntryPoint;
     case spv::Op::OpExecutionMode:
     case spv::Op::OpExecutionModeId:
@@ -71,6 +77,7 @@ ModuleLayoutSection InstructionLayoutSection(
     case spv::Op::OpMemberDecorateStringGOOGLE:
       return kLayoutAnnotations;
     case spv::Op::OpTypeForwardPointer:
+    case spv::Op::OpTypeTaskSequenceINTEL:
       return kLayoutTypes;
     case spv::Op::OpVariable:
     case spv::Op::OpUntypedVariableKHR:
@@ -81,6 +88,9 @@ ModuleLayoutSection InstructionLayoutSection(
       // spv::Op::OpExtInst is only allowed in types section for certain
       // extended instruction sets. This will be checked separately.
       if (current_section == kLayoutTypes) return kLayoutTypes;
+      // SpvOpExtInst is allowed in graph definitions.
+      if (current_section == kLayoutGraphDefinitions)
+        return kLayoutGraphDefinitions;
       return kLayoutFunctionDefinitions;
     case spv::Op::OpLine:
     case spv::Op::OpNoLine:
@@ -95,6 +105,16 @@ ModuleLayoutSection InstructionLayoutSection(
       return kLayoutFunctionDefinitions;
     case spv::Op::OpSamplerImageAddressingModeNV:
       return kLayoutSamplerImageAddressMode;
+    case spv::Op::OpGraphEntryPointARM:
+    case spv::Op::OpGraphARM:
+    case spv::Op::OpGraphInputARM:
+    case spv::Op::OpGraphSetOutputARM:
+    case spv::Op::OpGraphEndARM:
+      return kLayoutGraphDefinitions;
+    case spv::Op::OpCompositeExtract:
+      if (current_section == kLayoutGraphDefinitions)
+        return kLayoutGraphDefinitions;
+      return kLayoutFunctionDefinitions;
     default:
       break;
   }
@@ -170,6 +190,7 @@ ValidationState_t::ValidationState_t(const spv_const_context ctx,
       pointer_size_and_alignment_(0),
       sampler_image_addressing_mode_(0),
       in_function_(false),
+      graph_definition_region_(kGraphDefinitionOutside),
       num_of_warnings_(0),
       max_num_of_warnings_(max_warnings) {
   assert(opt && "Validator options may not be Null.");
@@ -358,6 +379,10 @@ bool ValidationState_t::in_block() const {
          module_functions_.back().current_block() != nullptr;
 }
 
+GraphDefinitionRegion ValidationState_t::graph_definition_region() const {
+  return graph_definition_region_;
+}
+
 void ValidationState_t::RegisterCapability(spv::Capability cap) {
   // Avoid redundant work.  Otherwise the recursion could induce work
   // quadrdatic in the capability dependency depth. (Ok, not much, but
@@ -365,11 +390,11 @@ void ValidationState_t::RegisterCapability(spv::Capability cap) {
   if (module_capabilities_.contains(cap)) return;
 
   module_capabilities_.insert(cap);
-  spv_operand_desc desc;
-  if (SPV_SUCCESS == grammar_.lookupOperand(SPV_OPERAND_TYPE_CAPABILITY,
-                                            uint32_t(cap), &desc)) {
-    for (auto capability :
-         CapabilitySet(desc->numCapabilities, desc->capabilities)) {
+  const spvtools::OperandDesc* desc = nullptr;
+  if (SPV_SUCCESS == spvtools::LookupOperand(SPV_OPERAND_TYPE_CAPABILITY,
+                                             uint32_t(cap), &desc)) {
+    for (auto capability : CapabilitySet(desc->capabilities_range.count(),
+                                         desc->capabilities().data())) {
       RegisterCapability(capability);
     }
   }
@@ -394,6 +419,9 @@ void ValidationState_t::RegisterCapability(spv::Capability cap) {
     case spv::Capability::Float16:
     case spv::Capability::Float16Buffer:
       features_.declare_float16_type = true;
+      break;
+    case spv::Capability::Float8EXT:
+      features_.declare_float8_type = true;
       break;
     case spv::Capability::StorageUniformBufferBlock16:
     case spv::Capability::StorageUniform16:
@@ -523,6 +551,13 @@ spv_result_t ValidationState_t::RegisterFunctionEnd() {
   current_function().RegisterFunctionEnd();
   in_function_ = false;
   return SPV_SUCCESS;
+}
+
+void ValidationState_t::SetGraphDefinitionRegion(GraphDefinitionRegion region) {
+  assert((region == kGraphDefinitionOutside &&
+          graph_definition_region_ == kGraphDefinitionOutputs) ||
+         region >= graph_definition_region_);
+  graph_definition_region_ = region;
 }
 
 Instruction* ValidationState_t::AddOrderedInstruction(
@@ -868,9 +903,12 @@ uint32_t ValidationState_t::GetComponentType(uint32_t id) const {
     case spv::Op::OpTypeFloat:
     case spv::Op::OpTypeInt:
     case spv::Op::OpTypeBool:
+    case spv::Op::OpTypePointer:
+    case spv::Op::OpTypeUntypedPointerKHR:
       return id;
 
     case spv::Op::OpTypeArray:
+    case spv::Op::OpTypeRuntimeArray:
       return inst->word(2);
 
     case spv::Op::OpTypeVector:
@@ -881,6 +919,10 @@ uint32_t ValidationState_t::GetComponentType(uint32_t id) const {
 
     case spv::Op::OpTypeCooperativeMatrixNV:
     case spv::Op::OpTypeCooperativeMatrixKHR:
+    case spv::Op::OpTypeCooperativeVectorNV:
+      return inst->word(2);
+
+    case spv::Op::OpTypeTensorARM:
       return inst->word(2);
 
     default:
@@ -909,6 +951,7 @@ uint32_t ValidationState_t::GetDimension(uint32_t id) const {
 
     case spv::Op::OpTypeCooperativeMatrixNV:
     case spv::Op::OpTypeCooperativeMatrixKHR:
+    case spv::Op::OpTypeCooperativeVectorNV:
       // Actual dimension isn't known, return 0
       return 0;
 
@@ -927,11 +970,20 @@ uint32_t ValidationState_t::GetBitWidth(uint32_t id) const {
   const Instruction* inst = FindDef(component_type_id);
   assert(inst);
 
-  if (inst->opcode() == spv::Op::OpTypeFloat ||
-      inst->opcode() == spv::Op::OpTypeInt)
-    return inst->word(2);
-
-  if (inst->opcode() == spv::Op::OpTypeBool) return 1;
+  switch (inst->opcode()) {
+    case spv::Op::OpTypeFloat:
+    case spv::Op::OpTypeInt:
+      return inst->word(2);
+    case spv::Op::OpTypeBool:
+      return 1;
+    case spv::Op::OpTypePointer:
+    case spv::Op::OpTypeUntypedPointerKHR:
+      assert(inst->GetOperandAs<spv::StorageClass>(1) ==
+             spv::StorageClass::PhysicalStorageBuffer);
+      return 64;  // all pointers to another PSB is 64-bit
+    default:
+      break;
+  }
 
   assert(0);
   return 0;
@@ -942,9 +994,122 @@ bool ValidationState_t::IsVoidType(uint32_t id) const {
   return inst && inst->opcode() == spv::Op::OpTypeVoid;
 }
 
+bool ValidationState_t::IsScalarType(uint32_t id) const {
+  return IsIntScalarType(id) || IsFloatScalarType(id) || IsBoolScalarType(id);
+}
+
+bool ValidationState_t::IsArrayType(uint32_t id, uint64_t length) const {
+  const Instruction* inst = FindDef(id);
+  if (!inst || inst->opcode() != spv::Op::OpTypeArray) {
+    return false;
+  }
+  if (length != 0) {
+    const auto len_id = inst->GetOperandAs<uint32_t>(2);
+    const auto len = FindDef(len_id);
+    uint64_t len_value = 0;
+    if (!len || !spvOpcodeIsConstant(len->opcode()) ||
+        (EvalConstantValUint64(len_id, &len_value) && (length != len_value))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool ValidationState_t::IsBfloat16ScalarType(uint32_t id) const {
+  const Instruction* inst = FindDef(id);
+  if (inst && inst->opcode() == spv::Op::OpTypeFloat) {
+    if (inst->words().size() > 3) {
+      if (inst->GetOperandAs<spv::FPEncoding>(2) ==
+          spv::FPEncoding::BFloat16KHR) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool ValidationState_t::IsBfloat16VectorType(uint32_t id) const {
+  const Instruction* inst = FindDef(id);
+  if (!inst) {
+    return false;
+  }
+
+  if (inst->opcode() == spv::Op::OpTypeVector) {
+    return IsBfloat16ScalarType(GetComponentType(id));
+  }
+
+  return false;
+}
+
+bool ValidationState_t::IsBfloat16CoopMatType(uint32_t id) const {
+  const Instruction* inst = FindDef(id);
+  if (!inst) {
+    return false;
+  }
+
+  if (inst->opcode() == spv::Op::OpTypeCooperativeMatrixKHR) {
+    return IsBfloat16ScalarType(inst->word(2));
+  }
+
+  return false;
+}
+
+bool ValidationState_t::IsBfloat16Type(uint32_t id) const {
+  return IsBfloat16ScalarType(id) || IsBfloat16VectorType(id) ||
+         IsBfloat16CoopMatType(id);
+}
+
+bool ValidationState_t::IsFP8ScalarType(uint32_t id) const {
+  const Instruction* inst = FindDef(id);
+  if (inst && inst->opcode() == spv::Op::OpTypeFloat) {
+    if (inst->words().size() > 3) {
+      auto encoding = inst->GetOperandAs<spv::FPEncoding>(2);
+      if ((encoding == spv::FPEncoding::Float8E4M3EXT) ||
+          (encoding == spv::FPEncoding::Float8E5M2EXT)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool ValidationState_t::IsFP8VectorType(uint32_t id) const {
+  const Instruction* inst = FindDef(id);
+  if (!inst) {
+    return false;
+  }
+
+  if (inst->opcode() == spv::Op::OpTypeVector) {
+    return IsFP8ScalarType(GetComponentType(id));
+  }
+
+  return false;
+}
+
+bool ValidationState_t::IsFP8CoopMatType(uint32_t id) const {
+  const Instruction* inst = FindDef(id);
+  if (!inst) {
+    return false;
+  }
+
+  if (inst->opcode() == spv::Op::OpTypeCooperativeMatrixKHR) {
+    return IsFP8ScalarType(inst->word(2));
+  }
+
+  return false;
+}
+
+bool ValidationState_t::IsFP8Type(uint32_t id) const {
+  return IsFP8ScalarType(id) || IsFP8VectorType(id) || IsFP8CoopMatType(id);
+}
+
 bool ValidationState_t::IsFloatScalarType(uint32_t id) const {
   const Instruction* inst = FindDef(id);
   return inst && inst->opcode() == spv::Op::OpTypeFloat;
+}
+
+bool ValidationState_t::IsFloatArrayType(uint32_t id) const {
+  return IsArrayType(id) && IsFloatScalarType(GetComponentType(id));
 }
 
 bool ValidationState_t::IsFloatVectorType(uint32_t id) const {
@@ -991,22 +1156,27 @@ bool ValidationState_t::IsFloatScalarOrVectorType(uint32_t id) const {
   return false;
 }
 
-bool ValidationState_t::IsIntScalarType(uint32_t id) const {
+bool ValidationState_t::IsIntScalarType(uint32_t id, uint32_t width) const {
   const Instruction* inst = FindDef(id);
-  return inst && inst->opcode() == spv::Op::OpTypeInt;
-}
-
-bool ValidationState_t::IsIntArrayType(uint32_t id) const {
-  const Instruction* inst = FindDef(id);
-  if (!inst) {
+  bool is_int = inst && inst->opcode() == spv::Op::OpTypeInt;
+  if (!is_int) {
     return false;
   }
-
-  if (inst->opcode() == spv::Op::OpTypeArray) {
-    return IsIntScalarType(GetComponentType(id));
+  if ((width != 0) && (width != inst->word(2))) {
+    return false;
   }
+  return true;
+}
 
-  return false;
+bool ValidationState_t::IsIntScalarTypeWithSignedness(
+    uint32_t id, uint32_t signedness) const {
+  const Instruction* inst = FindDef(id);
+  return inst && inst->opcode() == spv::Op::OpTypeInt &&
+         inst->word(3) == signedness;
+}
+
+bool ValidationState_t::IsIntArrayType(uint32_t id, uint64_t length) const {
+  return IsArrayType(id, length) && IsIntScalarType(GetComponentType(id));
 }
 
 bool ValidationState_t::IsIntVectorType(uint32_t id) const {
@@ -1040,8 +1210,7 @@ bool ValidationState_t::IsIntScalarOrVectorType(uint32_t id) const {
 }
 
 bool ValidationState_t::IsUnsignedIntScalarType(uint32_t id) const {
-  const Instruction* inst = FindDef(id);
-  return inst && inst->opcode() == spv::Op::OpTypeInt && inst->word(3) == 0;
+  return IsIntScalarTypeWithSignedness(id, 0);
 }
 
 bool ValidationState_t::IsUnsignedIntVectorType(uint32_t id) const {
@@ -1185,6 +1354,7 @@ bool ValidationState_t::GetStructMemberTypes(
 }
 
 bool ValidationState_t::IsPointerType(uint32_t id) const {
+  if (!id) return false;
   const Instruction* inst = FindDef(id);
   assert(inst);
   return inst->opcode() == spv::Op::OpTypePointer ||
@@ -1209,6 +1379,28 @@ bool ValidationState_t::GetPointerTypeInfo(
   *storage_class = spv::StorageClass(inst->word(2));
   *data_type = inst->word(3);
   return true;
+}
+
+uint32_t ValidationState_t::GetLargestScalarType(uint32_t id) const {
+  const Instruction* inst = FindDef(id);
+
+  switch (inst->opcode()) {
+    case spv::Op::OpTypeStruct: {
+      uint32_t size = 0;
+      for (uint32_t i = 1; i < inst->operands().size(); ++i) {
+        const uint32_t member_size =
+            GetLargestScalarType(inst->GetOperandAs<uint32_t>(i));
+        size = std::max(size, member_size);
+      }
+      return size;
+    }
+    case spv::Op::OpTypeArray:
+      return GetLargestScalarType(inst->GetOperandAs<uint32_t>(1));
+    case spv::Op::OpTypeVector:
+      return GetLargestScalarType(inst->GetOperandAs<uint32_t>(1));
+    default:
+      return GetBitWidth(id) / 8;
+  }
 }
 
 bool ValidationState_t::IsAccelerationStructureType(uint32_t id) const {
@@ -1289,9 +1481,36 @@ bool ValidationState_t::IsUnsigned64BitHandle(uint32_t id) const {
            GetBitWidth(id) == 32));
 }
 
+bool ValidationState_t::IsCooperativeVectorNVType(uint32_t id) const {
+  const Instruction* inst = FindDef(id);
+  return inst && inst->opcode() == spv::Op::OpTypeCooperativeVectorNV;
+}
+
+bool ValidationState_t::IsFloatCooperativeVectorNVType(uint32_t id) const {
+  if (!IsCooperativeVectorNVType(id)) return false;
+  return IsFloatScalarType(FindDef(id)->word(2));
+}
+
+bool ValidationState_t::IsIntCooperativeVectorNVType(uint32_t id) const {
+  if (!IsCooperativeVectorNVType(id)) return false;
+  return IsIntScalarType(FindDef(id)->word(2));
+}
+
+bool ValidationState_t::IsUnsignedIntCooperativeVectorNVType(
+    uint32_t id) const {
+  if (!IsCooperativeVectorNVType(id)) return false;
+  return IsUnsignedIntScalarType(FindDef(id)->word(2));
+}
+
+bool ValidationState_t::IsTensorType(uint32_t id) const {
+  const Instruction* inst = FindDef(id);
+  return inst && inst->opcode() == spv::Op::OpTypeTensorARM;
+}
+
 spv_result_t ValidationState_t::CooperativeMatrixShapesMatch(
-    const Instruction* inst, uint32_t m1, uint32_t m2) {
-  const auto m1_type = FindDef(m1);
+    const Instruction* inst, uint32_t result_type_id, uint32_t m2,
+    bool is_conversion, bool swap_row_col) {
+  const auto m1_type = FindDef(result_type_id);
   const auto m2_type = FindDef(m2);
 
   if (m1_type->opcode() != m2_type->opcode()) {
@@ -1307,6 +1526,10 @@ spv_result_t ValidationState_t::CooperativeMatrixShapesMatch(
   uint32_t m2_rows_id = m2_type->GetOperandAs<uint32_t>(3);
   uint32_t m2_cols_id = m2_type->GetOperandAs<uint32_t>(4);
 
+  if (swap_row_col) {
+    std::swap(m1_rows_id, m1_cols_id);
+  }
+
   bool m1_is_int32 = false, m1_is_const_int32 = false, m2_is_int32 = false,
        m2_is_const_int32 = false;
   uint32_t m1_value = 0, m2_value = 0;
@@ -1318,8 +1541,7 @@ spv_result_t ValidationState_t::CooperativeMatrixShapesMatch(
 
   if (m1_is_const_int32 && m2_is_const_int32 && m1_value != m2_value) {
     return diag(SPV_ERROR_INVALID_DATA, inst)
-           << "Expected scopes of Matrix and Result Type to be "
-           << "identical";
+           << "Expected scopes of Matrix and Result Type to be " << "identical";
   }
 
   std::tie(m1_is_int32, m1_is_const_int32, m1_value) =
@@ -1330,7 +1552,7 @@ spv_result_t ValidationState_t::CooperativeMatrixShapesMatch(
   if (m1_is_const_int32 && m2_is_const_int32 && m1_value != m2_value) {
     return diag(SPV_ERROR_INVALID_DATA, inst)
            << "Expected rows of Matrix type and Result Type to be "
-           << "identical";
+           << (swap_row_col ? "swapped with columns" : "identical");
   }
 
   std::tie(m1_is_int32, m1_is_const_int32, m1_value) =
@@ -1341,7 +1563,7 @@ spv_result_t ValidationState_t::CooperativeMatrixShapesMatch(
   if (m1_is_const_int32 && m2_is_const_int32 && m1_value != m2_value) {
     return diag(SPV_ERROR_INVALID_DATA, inst)
            << "Expected columns of Matrix type and Result Type to be "
-           << "identical";
+           << (swap_row_col ? "swapped with rows" : "identical");
   }
 
   if (m1_type->opcode() == spv::Op::OpTypeCooperativeMatrixKHR) {
@@ -1352,11 +1574,46 @@ spv_result_t ValidationState_t::CooperativeMatrixShapesMatch(
     std::tie(m2_is_int32, m2_is_const_int32, m2_value) =
         EvalInt32IfConst(m2_use_id);
 
-    if (m1_is_const_int32 && m2_is_const_int32 && m1_value != m2_value) {
+    if (m1_is_const_int32 && m2_is_const_int32 && m1_value != m2_value &&
+        // CooperativeMatrixConversionsNV allows conversions from Acc->A/B
+        !(is_conversion &&
+          HasCapability(spv::Capability::CooperativeMatrixConversionsNV) &&
+          m2_value ==
+              (uint32_t)spv::CooperativeMatrixUse::MatrixAccumulatorKHR)) {
       return diag(SPV_ERROR_INVALID_DATA, inst)
              << "Expected Use of Matrix type and Result Type to be "
              << "identical";
     }
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidationState_t::CooperativeVectorDimensionsMatch(
+    const Instruction* inst, uint32_t v1, uint32_t v2) {
+  const auto v1_type = FindDef(v1);
+  const auto v2_type = FindDef(v2);
+
+  if (v1_type->opcode() != v2_type->opcode()) {
+    return diag(SPV_ERROR_INVALID_DATA, inst)
+           << "Expected cooperative vector types";
+  }
+
+  uint32_t v1_components_id = v1_type->GetOperandAs<uint32_t>(2);
+  uint32_t v2_components_id = v2_type->GetOperandAs<uint32_t>(2);
+
+  bool v1_is_int32 = false, v1_is_const_int32 = false, v2_is_int32 = false,
+       v2_is_const_int32 = false;
+  uint32_t v1_value = 0, v2_value = 0;
+
+  std::tie(v1_is_int32, v1_is_const_int32, v1_value) =
+      EvalInt32IfConst(v1_components_id);
+  std::tie(v2_is_int32, v2_is_const_int32, v2_value) =
+      EvalInt32IfConst(v2_components_id);
+
+  if (v1_is_const_int32 && v2_is_const_int32 && v1_value != v2_value) {
+    return diag(SPV_ERROR_INVALID_DATA, inst)
+           << "Expected number of components to be identical";
   }
 
   return SPV_SUCCESS;
@@ -1654,6 +1911,7 @@ bool ValidationState_t::ContainsType(
     case spv::Op::OpTypeSampledImage:
     case spv::Op::OpTypeCooperativeMatrixNV:
     case spv::Op::OpTypeCooperativeMatrixKHR:
+    case spv::Op::OpTypeCooperativeVectorNV:
       return ContainsType(inst->GetOperandAs<uint32_t>(1u), f,
                           traverse_all_types);
     case spv::Op::OpTypePointer:
@@ -1688,6 +1946,10 @@ bool ValidationState_t::ContainsSizedIntOrFloatType(uint32_t id, spv::Op type,
 
   const auto f = [type, width](const Instruction* inst) {
     if (inst->opcode() == type) {
+      // Bfloat16 is a special type.
+      if (type == spv::Op::OpTypeFloat && inst->words().size() > 3)
+        return false;
+
       return inst->GetOperandAs<uint32_t>(1u) == width;
     }
     return false;
@@ -1771,6 +2033,8 @@ bool ValidationState_t::IsValidStorageClass(
       case spv::StorageClass::TaskPayloadWorkgroupEXT:
       case spv::StorageClass::HitObjectAttributeNV:
       case spv::StorageClass::TileImageEXT:
+      case spv::StorageClass::NodePayloadAMDX:
+      case spv::StorageClass::TileAttachmentQCOM:
         return true;
       default:
         return false;
@@ -1778,6 +2042,14 @@ bool ValidationState_t::IsValidStorageClass(
   }
 
   return true;
+}
+
+std::string ValidationState_t::MissingFeature(const std::string& feature,
+                                              const std::string& cmdline,
+                                              bool hint) const {
+  return "\nThis is " + (hint ? std::string("may be ") : "") +
+         "allowed if you enable the " + feature + " (or use the " + cmdline +
+         " command line flag)";
 }
 
 #define VUID_WRAP(vuid) "[" #vuid "] "
@@ -2042,8 +2314,12 @@ std::string ValidationState_t::VkErrorID(uint32_t id,
       return VUID_WRAP(VUID-Position-Position-04321);
     case 4330:
       return VUID_WRAP(VUID-PrimitiveId-PrimitiveId-04330);
+    case 4333:
+      return VUID_WRAP(VUID-PrimitiveId-Fragment-04333);
     case 4334:
       return VUID_WRAP(VUID-PrimitiveId-PrimitiveId-04334);
+    case 4336:
+      return VUID_WRAP(VUID-PrimitiveId-PrimitiveId-04336);
     case 4337:
       return VUID_WRAP(VUID-PrimitiveId-PrimitiveId-04337);
     case 4345:
@@ -2228,8 +2504,6 @@ std::string ValidationState_t::VkErrorID(uint32_t id,
       return VUID_WRAP(VUID-StandaloneSpirv-None-04644);
     case 4645:
       return VUID_WRAP(VUID-StandaloneSpirv-None-04645);
-    case 4650:
-      return VUID_WRAP(VUID-StandaloneSpirv-OpControlBarrier-04650);
     case 4651:
       return VUID_WRAP(VUID-StandaloneSpirv-OpVariable-04651);
     case 4652:
@@ -2248,8 +2522,6 @@ std::string ValidationState_t::VkErrorID(uint32_t id,
       return VUID_WRAP(VUID-StandaloneSpirv-OpImageTexelPointer-04658);
     case 4659:
       return VUID_WRAP(VUID-StandaloneSpirv-OpImageQuerySizeLod-04659);
-    case 4663:
-      return VUID_WRAP(VUID-StandaloneSpirv-Offset-04663);
     case 4664:
       return VUID_WRAP(VUID-StandaloneSpirv-OpImageGather-04664);
     case 4667:
@@ -2298,14 +2570,6 @@ std::string ValidationState_t::VkErrorID(uint32_t id,
       return VUID_WRAP(VUID-StandaloneSpirv-PhysicalStorageBuffer64-04710);
     case 4711:
       return VUID_WRAP(VUID-StandaloneSpirv-OpTypeForwardPointer-04711);
-    case 4730:
-      return VUID_WRAP(VUID-StandaloneSpirv-OpAtomicStore-04730);
-    case 4731:
-      return VUID_WRAP(VUID-StandaloneSpirv-OpAtomicLoad-04731);
-    case 4732:
-      return VUID_WRAP(VUID-StandaloneSpirv-OpMemoryBarrier-04732);
-    case 4733:
-      return VUID_WRAP(VUID-StandaloneSpirv-OpMemoryBarrier-04733);
     case 4734:
       return VUID_WRAP(VUID-StandaloneSpirv-OpVariable-04734);
     case 4744:
@@ -2314,8 +2578,6 @@ std::string ValidationState_t::VkErrorID(uint32_t id,
       return VUID_WRAP(VUID-StandaloneSpirv-OpImage-04777);
     case 4780:
       return VUID_WRAP(VUID-StandaloneSpirv-Result-04780);
-    case 4781:
-      return VUID_WRAP(VUID-StandaloneSpirv-Base-04781);
     case 4915:
       return VUID_WRAP(VUID-StandaloneSpirv-Location-04915);
     case 4916:
@@ -2334,14 +2596,14 @@ std::string ValidationState_t::VkErrorID(uint32_t id,
       return VUID_WRAP(VUID-StandaloneSpirv-Component-04922);
     case 4923:
       return VUID_WRAP(VUID-StandaloneSpirv-Component-04923);
-    case 4924:
-      return VUID_WRAP(VUID-StandaloneSpirv-Component-04924);
     case 6201:
       return VUID_WRAP(VUID-StandaloneSpirv-Flat-06201);
     case 6202:
       return VUID_WRAP(VUID-StandaloneSpirv-Flat-06202);
     case 6214:
       return VUID_WRAP(VUID-StandaloneSpirv-OpTypeImage-06214);
+    case 6314:
+      return VUID_WRAP(VUID-StandaloneSpirv-PhysicalStorageBuffer64-06314);
     case 6491:
       return VUID_WRAP(VUID-StandaloneSpirv-DescriptorSet-06491);
     case 6671:
@@ -2372,30 +2634,62 @@ std::string ValidationState_t::VkErrorID(uint32_t id,
       return VUID_WRAP(VUID-StandaloneSpirv-OpTypeImage-06924);
     case 6925:
       return VUID_WRAP(VUID-StandaloneSpirv-Uniform-06925);
+    case 7034:
+      return VUID_WRAP(VUID-CullPrimitiveEXT-CullPrimitiveEXT-07034);
+    case 7035:
+      return VUID_WRAP(VUID-CullPrimitiveEXT-CullPrimitiveEXT-07035);
+    case 7036:
+      return VUID_WRAP(VUID-CullPrimitiveEXT-CullPrimitiveEXT-07036);
+    case 7038:
+      return VUID_WRAP(VUID-CullPrimitiveEXT-CullPrimitiveEXT-07038);
+    case 7039:
+        return VUID_WRAP(VUID-Layer-Layer-07039);
+    case 7040:
+      return VUID_WRAP(VUID-PrimitiveId-PrimitiveId-07040);
     case 7041:
       return VUID_WRAP(VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07041);
+    case 7042:
+      return VUID_WRAP(VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07042);
     case 7043:
       return VUID_WRAP(VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07043);
     case 7044:
       return VUID_WRAP(VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07044);
+    case 7046:
+      return VUID_WRAP(VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07046);
     case 7047:
       return VUID_WRAP(VUID-PrimitiveLineIndicesEXT-PrimitiveLineIndicesEXT-07047);
+    case 7048:
+      return VUID_WRAP(VUID-PrimitiveLineIndicesEXT-PrimitiveLineIndicesEXT-07048);
     case 7049:
       return VUID_WRAP(VUID-PrimitiveLineIndicesEXT-PrimitiveLineIndicesEXT-07049);
     case 7050:
       return VUID_WRAP(VUID-PrimitiveLineIndicesEXT-PrimitiveLineIndicesEXT-07050);
+    case 7052:
+      return VUID_WRAP(VUID-PrimitiveLineIndicesEXT-PrimitiveLineIndicesEXT-07052);
     case 7053:
       return VUID_WRAP(VUID-PrimitiveTriangleIndicesEXT-PrimitiveTriangleIndicesEXT-07053);
+    case 7054:
+      return VUID_WRAP(VUID-PrimitiveTriangleIndicesEXT-PrimitiveTriangleIndicesEXT-07054);
     case 7055:
       return VUID_WRAP(VUID-PrimitiveTriangleIndicesEXT-PrimitiveTriangleIndicesEXT-07055);
     case 7056:
       return VUID_WRAP(VUID-PrimitiveTriangleIndicesEXT-PrimitiveTriangleIndicesEXT-07056);
+    case 7058:
+      return VUID_WRAP(VUID-PrimitiveTriangleIndicesEXT-PrimitiveTriangleIndicesEXT-07058);
+    case 7059:
+      return VUID_WRAP(VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-07059);
+    case 7060:
+      return VUID_WRAP(VUID-ViewportIndex-ViewportIndex-07060);
     case 7102:
       return VUID_WRAP(VUID-StandaloneSpirv-MeshEXT-07102);
-    case 7320:
-      return VUID_WRAP(VUID-StandaloneSpirv-ExecutionModel-07320);
     case 7290:
       return VUID_WRAP(VUID-StandaloneSpirv-Input-07290);
+    case 7320:
+      return VUID_WRAP(VUID-StandaloneSpirv-ExecutionModel-07320);
+    case 7330:
+      return VUID_WRAP(VUID-StandaloneSpirv-MeshEXT-07330);
+    case 7331:
+      return VUID_WRAP(VUID-StandaloneSpirv-MeshEXT-07331);
     case 7650:
       return VUID_WRAP(VUID-StandaloneSpirv-Base-07650);
     case 7651:
@@ -2412,12 +2706,90 @@ std::string ValidationState_t::VkErrorID(uint32_t id,
       return VUID_WRAP(VUID-StandaloneSpirv-OpEntryPoint-08722);
     case 8973:
       return VUID_WRAP(VUID-StandaloneSpirv-Pointer-08973);
+    case 9557:
+    return VUID_WRAP(VUID-StandaloneSpirv-Input-09557);
     case 9638:
       return VUID_WRAP(VUID-StandaloneSpirv-OpTypeImage-09638);
     case 9658:
       return VUID_WRAP(VUID-StandaloneSpirv-OpEntryPoint-09658);
     case 9659:
       return VUID_WRAP(VUID-StandaloneSpirv-OpEntryPoint-09659);
+    case 10151:
+      return VUID_WRAP(VUID-StandaloneSpirv-DerivativeGroupQuadsKHR-10151);
+    case 10152:
+      return VUID_WRAP(VUID-StandaloneSpirv-DerivativeGroupLinearKHR-10152);
+    case 10213:
+      // This use to be a standalone, but maintenance8 will set allow_offset_texture_operand now
+      return VUID_WRAP(VUID-RuntimeSpirv-Offset-10213);
+    case 10370:
+      return VUID_WRAP(VUID-StandaloneSpirv-OpTypeFloat-10370);
+    case 10583:
+      return VUID_WRAP(VUID-StandaloneSpirv-Component-10583);
+    case 10589:
+      return VUID_WRAP(VUID-CullPrimitiveEXT-CullPrimitiveEXT-10589);
+    case 10590:
+      return VUID_WRAP(VUID-CullPrimitiveEXT-CullPrimitiveEXT-10590);
+    case 10591:
+      return VUID_WRAP(VUID-CullPrimitiveEXT-CullPrimitiveEXT-10591);
+    case 10592:
+      return VUID_WRAP(VUID-Layer-Layer-10592);
+    case 10593:
+      return VUID_WRAP(VUID-Layer-Layer-10593);
+    case 10594:
+      return VUID_WRAP(VUID-Layer-Layer-10594);
+    case 10598:
+      return VUID_WRAP(VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-10598);
+    case 10599:
+      return VUID_WRAP(VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-10599);
+    case 10600:
+      return VUID_WRAP(VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-10600);
+    case 10601:
+      return VUID_WRAP(VUID-ViewportIndex-ViewportIndex-10601);
+    case 10602:
+      return VUID_WRAP(VUID-ViewportIndex-ViewportIndex-10602);
+    case 10603:
+      return VUID_WRAP(VUID-ViewportIndex-ViewportIndex-10603);
+    case 10684:
+      return VUID_WRAP(VUID-StandaloneSpirv-None-10684);
+    case 10685:
+      return VUID_WRAP(VUID-StandaloneSpirv-None-10685);
+    case 10824:
+      // This use to be a standalone, but maintenance9 will set allow_vulkan_32_bit_bitwise now
+      return VUID_WRAP(VUID-RuntimeSpirv-None-10824);
+    case 10865:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10865);
+    case 10866:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10866);
+    case 10867:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10867);
+    case 10868:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10868);
+    case 10869:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10869);
+    case 10870:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10870);
+    case 10871:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10871);
+    case 10872:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10872);
+    case 10873:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10873);
+    case 10874:
+      return VUID_WRAP(VUID-StandaloneSpirv-MemorySemantics-10874);
+    case 10875:
+      return VUID_WRAP(VUID-StandaloneSpirv-UnequalMemorySemantics-10875);
+    case 10876:
+      return VUID_WRAP(VUID-StandaloneSpirv-UnequalMemorySemantics-10876);
+    case 10877:
+      return VUID_WRAP(VUID-StandaloneSpirv-UnequalMemorySemantics-10877);
+    case 10878:
+      return VUID_WRAP(VUID-StandaloneSpirv-UnequalMemorySemantics-10878);
+    case 10879:
+      return VUID_WRAP(VUID-StandaloneSpirv-UnequalMemorySemantics-10879);
+    case 10880:
+      return VUID_WRAP(VUID-StandaloneSpirv-TessLevelInner-10880);
+    case 11167:
+      return VUID_WRAP(VUID-StandaloneSpirv-OpUntypedVariableKHR-11167);
     default:
       return "";  // unknown id
   }
